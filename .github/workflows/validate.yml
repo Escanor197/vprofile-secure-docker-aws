@@ -1,0 +1,30 @@
+name: Validate project
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Create non-sensitive validation placeholders
+        run: |
+          cp .env.example .env
+          mkdir -p secrets
+          for file in mysql_root_password mysql_app_password rabbitmq_user rabbitmq_password app_properties; do
+            printf 'validation-only' > "secrets/${file}"
+          done
+
+      - name: Validate Compose model
+        run: docker compose config --quiet
+
+      - name: Validate shell syntax
+        run: bash -n scripts/*.sh docker/rabbitmq/secure-entrypoint.sh
