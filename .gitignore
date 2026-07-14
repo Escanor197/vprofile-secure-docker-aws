@@ -1,0 +1,20 @@
+# Runtime configuration and secrets
+.env
+secrets/*
+!secrets/.gitignore
+
+# Backups and database exports
+backups/
+*.sql.gz
+*.tar.gz
+
+# Local tooling
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
+
+# Build/package outputs
+*.zip
+*.tar

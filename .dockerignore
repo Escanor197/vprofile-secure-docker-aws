@@ -1,0 +1,10 @@
+.git
+.github
+.env
+secrets/*
+backups
+*.zip
+*.tar
+*.log
+README.md
+docs

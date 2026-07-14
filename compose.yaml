@@ -1,0 +1,243 @@
+name: vprofile
+
+x-common: &common
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  app:
+    <<: *common
+    image: ${APP_IMAGE:-vprofile-app:secure}
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 300
+    mem_limit: ${APP_MEMORY_LIMIT:-1536m}
+    cpus: ${APP_CPU_LIMIT:-1.50}
+    ports:
+      - "${APP_BIND_IP:?Set APP_BIND_IP in .env}:${APP_PORT:-8080}:8080"
+    secrets:
+      - app_properties
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      - /usr/local/tomcat/temp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+      - /usr/local/tomcat/work:rw,noexec,nosuid,nodev,size=128m,mode=1777
+      - /usr/local/tomcat/logs:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    networks:
+      - edge
+      - db_net
+      - cache_net
+      - mq_net
+      - search_net
+    depends_on:
+      db01:
+        condition: service_healthy
+      mc01:
+        condition: service_healthy
+      rmq01:
+        condition: service_healthy
+      vprosearch01:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  db01:
+    <<: *common
+    image: ${DB_IMAGE:-vprofile-db:secure}
+    build:
+      context: .
+      dockerfile: docker/mysql/Dockerfile
+    read_only: true
+    pids_limit: 300
+    mem_limit: ${DB_MEMORY_LIMIT:-2560m}
+    cpus: ${DB_CPU_LIMIT:-1.50}
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_DATABASE: accounts
+      MYSQL_USER: vprofile_app
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_app_password
+      MYSQL_INITDB_SKIP_TZINFO: "1"
+    secrets:
+      - mysql_root_password
+      - mysql_app_password
+    command:
+      - --skip-name-resolve
+      - --local-infile=0
+      - --max-connections=150
+      - --require-secure-transport=ON
+    volumes:
+      - mysql_data:/var/lib/mysql
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+      - /var/run/mysqld:rw,noexec,nosuid,nodev,size=16m,mode=0755,uid=999,gid=999
+    networks:
+      - db_net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    stop_grace_period: 60s
+
+  mc01:
+    <<: *common
+    image: ${MEMCACHED_IMAGE:-vprofile-memcached:secure}
+    build:
+      context: .
+      dockerfile: docker/memcached/Dockerfile
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 100
+    mem_limit: ${MEMCACHED_MEMORY_LIMIT:-256m}
+    cpus: ${MEMCACHED_CPU_LIMIT:-0.50}
+    command:
+      - memcached
+      - -m
+      - "128"
+      - -c
+      - "1024"
+      - -t
+      - "2"
+      - -U
+      - "0"
+      - -l
+      - 0.0.0.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    networks:
+      - cache_net
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'version\\r\\n' | nc -w 2 127.0.0.1 11211 | grep -q '^VERSION'"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  rmq01:
+    <<: *common
+    image: ${RABBITMQ_IMAGE:-vprofile-rabbitmq:secure}
+    build:
+      context: .
+      dockerfile: docker/rabbitmq/Dockerfile
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    pids_limit: 300
+    mem_limit: ${RABBITMQ_MEMORY_LIMIT:-1024m}
+    cpus: ${RABBITMQ_CPU_LIMIT:-1.00}
+    environment:
+      RABBITMQ_DEFAULT_VHOST: /vprofile
+    secrets:
+      - rabbitmq_user
+      - rabbitmq_password
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+      - /var/log/rabbitmq:rw,noexec,nosuid,nodev,size=64m,mode=0755
+    networks:
+      - mq_net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 20s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+    stop_grace_period: 60s
+
+  vprosearch01:
+    <<: *common
+    platform: linux/amd64
+    image: ${ELASTICSEARCH_IMAGE:-vprofile-elasticsearch:5.6.4}
+    build:
+      context: .
+      dockerfile: docker/elasticsearch/Dockerfile
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 500
+    mem_limit: ${ELASTICSEARCH_MEMORY_LIMIT:-2048m}
+    cpus: ${ELASTICSEARCH_CPU_LIMIT:-1.50}
+    environment:
+      cluster.name: vprofile
+      node.name: vprofilenode
+      discovery.type: single-node
+      network.host: 0.0.0.0
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1024m -Xmx1024m
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+      - /usr/share/elasticsearch/logs:rw,noexec,nosuid,nodev,size=128m,mode=0755,uid=1000,gid=1000
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - search_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    stop_grace_period: 90s
+
+networks:
+  edge:
+    driver: bridge
+  db_net:
+    driver: bridge
+    internal: true
+  cache_net:
+    driver: bridge
+    internal: true
+  mq_net:
+    driver: bridge
+    internal: true
+  search_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
+  elasticsearch_data:
+
+secrets:
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+  mysql_app_password:
+    file: ./secrets/mysql_app_password
+  rabbitmq_user:
+    file: ./secrets/rabbitmq_user
+  rabbitmq_password:
+    file: ./secrets/rabbitmq_password
+  app_properties:
+    file: ./secrets/app_properties
