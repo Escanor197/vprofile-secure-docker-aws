@@ -91,7 +91,7 @@ Detailed network and security-group diagrams are available in [`docs/ARCHITECTUR
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/vprofile-secure-docker-aws.git
+git clone https://github.com/Escanor197/vprofile-secure-docker-aws.git
 cd vprofile-secure-docker-aws
 cp .env.example .env
 ```
